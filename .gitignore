@@ -1,0 +1,11 @@
+.claude/
+
+*.swp
+/.idea
+.vscode/
+
+.DS_Store
+.#*
+
+# Output of `deno task coverage` (raw .json coverage data + optional HTML report).
+/cov_profile/
