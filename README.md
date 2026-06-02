@@ -1,4 +1,6 @@
-## @innis/nostr-event-store
+# @innis/nostr-event-store
+
+[![CI](https://github.com/johninnis/nostr-event-store-ts/actions/workflows/ci.yml/badge.svg)](https://github.com/johninnis/nostr-event-store-ts/actions/workflows/ci.yml)
 
 In-memory event cache plus IndexedDB-backed event store for Nostr events. One filter language (NIP-01, via `matchesFilter` from `@innis/nostr-core`) drives four evaluation modes: memory reads, IndexedDB reads, synchronous peeks, and live subscriptions.
 
