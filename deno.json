@@ -29,8 +29,9 @@
     "test": "deno test -A",
     "coverage": "rm -rf cov_profile && deno test -A --coverage=cov_profile && deno coverage cov_profile --lcov --output=cov_profile/lcov.info && deno coverage cov_profile && deno run --allow-read scripts/check-coverage.ts",
     "exports-tested": "deno run --allow-read --allow-run scripts/check-exports-tested.ts",
+    "docs": "deno run --allow-read --allow-run scripts/check-docs.ts",
     "publish:dry": "deno publish --dry-run",
-    "ci": "deno task fmt:check && deno task lint && deno task check && deno task coverage && deno task exports-tested"
+    "ci": "deno task fmt:check && deno task lint && deno task check && deno task coverage && deno task exports-tested && deno task docs"
   },
   "lint": {
     "plugins": [
