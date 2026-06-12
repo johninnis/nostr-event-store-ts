@@ -4,7 +4,7 @@ import { KIND_CONTACT_LIST, KIND_METADATA, KIND_SHORT_NOTE, parseEventId, parseP
 import { REPLACEABLE_CACHE_MAX_ENTRIES } from "../src/constants.ts"
 import { parseEventFromRow } from "../src/event-row.ts"
 import { createEventStore } from "../src/event-store.ts"
-import { buildEventFixture, buildStore, PUBKEY_A, PUBKEY_B, rowFor } from "./helpers.ts"
+import { buildEventFixture, buildStore, PUBKEY_A, PUBKEY_B, rowFor } from "./_helpers/fixtures.ts"
 
 Deno.test("createEventStore - exposes the documented public surface and is frozen", () => {
   const store = createEventStore()

@@ -2,7 +2,7 @@ import { assertEquals } from "@std/assert"
 import type { NostrEvent } from "@innis/nostr-core"
 import { KIND_CONTACT_LIST, KIND_RELAY_LIST, KIND_SHORT_NOTE } from "@innis/nostr-core"
 import { EVENTS_STORE } from "../src/constants.ts"
-import { buildEventFixture, buildStore, freshIdbStore, PUBKEY_A, PUBKEY_B } from "./helpers.ts"
+import { buildEventFixture, buildStore, freshIdbStore, PUBKEY_A, PUBKEY_B } from "./_helpers/fixtures.ts"
 
 Deno.test("idb integration - init opens v1 with no eager walk; ingest persists; second store reads back via IDB; replaceable atomic; delete clears IDB", async () => {
   const eventStore = buildStore()

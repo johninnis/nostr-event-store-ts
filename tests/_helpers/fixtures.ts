@@ -1,8 +1,8 @@
 import "fake-indexeddb/auto"
 import type { NostrEvent } from "@innis/nostr-core"
 import { KIND_SHORT_NOTE, parseEventId, parsePublicKey, parseSig } from "@innis/nostr-core"
-import type { EventStore } from "../src/event-store.ts"
-import { createEventStore } from "../src/event-store.ts"
+import type { EventStore } from "../../src/event-store.ts"
+import { createEventStore } from "../../src/event-store.ts"
 
 export const PUBKEY_A = parsePublicKey("a".repeat(64))
 export const PUBKEY_B = parsePublicKey("b".repeat(64))
