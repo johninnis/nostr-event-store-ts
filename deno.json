@@ -18,7 +18,7 @@
   "imports": {
     "@std/assert": "jsr:@std/assert@^1",
     "@std/path": "jsr:@std/path@^1",
-    "@innis/nostr-core": "jsr:@innis/nostr-core@^0.2.11",
+    "@innis/nostr-core": "jsr:@innis/nostr-core@^0.2.12",
     "fake-indexeddb/auto": "npm:fake-indexeddb@^6/auto"
   },
   "tasks": {
