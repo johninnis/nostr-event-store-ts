@@ -1,6 +1,6 @@
 {
   "name": "@innis/nostr-event-store",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "description": "In-memory event cache + IndexedDB-backed event store for Nostr events. One NIP-01 filter language across memory, IndexedDB, peek, and subscriptions; atomic replaceable writes via a unique index.",
   "exports": "./mod.ts",
@@ -18,7 +18,7 @@
   "imports": {
     "@std/assert": "jsr:@std/assert@^1",
     "@std/path": "jsr:@std/path@^1",
-    "@innis/nostr-core": "jsr:@innis/nostr-core@^0.2.4",
+    "@innis/nostr-core": "jsr:@innis/nostr-core@^0.2.11",
     "fake-indexeddb/auto": "npm:fake-indexeddb@^6/auto"
   },
   "tasks": {

@@ -1,5 +1,5 @@
 import type { NostrEvent, NostrFilter, PublicKey } from "@innis/nostr-core"
-import { matchesFilter, reportUnhandledError } from "@innis/nostr-core"
+import { compileFilter, reportUnhandledError } from "@innis/nostr-core"
 import { parseEventFromRow } from "./event-row.ts"
 import {
   hasSearch,
@@ -26,17 +26,19 @@ export const authorCreatedAtRange = (author: PublicKey, filter: NostrFilter): ID
   IDBKeyRange.bound([author, filter.since ?? 0], [author, filter.until ?? Infinity])
 
 const queryIdbIdsOnly = (store: IDBObjectStore, filter: NostrFilter, emit: Emit): void => {
+  const { matches } = compileFilter(filter)
   for (const id of filter.ids ?? []) {
     const req = store.get(id)
     req.onsuccess = (): void => {
       const event = parseEventFromRow(req.result)
-      if (event && matchesFilter(event, filter)) emit(event)
+      if (event && matches(event)) emit(event)
     }
     req.onerror = (): void => reportIdbError(req.error)
   }
 }
 
 const queryIdbReplaceable = (store: IDBObjectStore, filter: NostrFilter, emit: Emit): void => {
+  const { matches } = compileFilter(filter)
   const index = store.index("replaceable_key")
   for (const kind of filter.kinds ?? []) {
     for (const author of filter.authors ?? []) {
@@ -45,7 +47,7 @@ const queryIdbReplaceable = (store: IDBObjectStore, filter: NostrFilter, emit: E
       const req = index.get(key)
       req.onsuccess = (): void => {
         const event = parseEventFromRow(req.result)
-        if (event && matchesFilter(event, filter)) emit(event)
+        if (event && matches(event)) emit(event)
       }
       req.onerror = (): void => reportIdbError(req.error)
     }
@@ -53,6 +55,7 @@ const queryIdbReplaceable = (store: IDBObjectStore, filter: NostrFilter, emit: E
 }
 
 const queryIdbByAuthors = (store: IDBObjectStore, filter: NostrFilter, emit: Emit): void => {
+  const { matches } = compileFilter(filter)
   const limit = filter.limit ?? DEFAULT_LIMIT
   const index = store.index("pubkey_created_at")
   let emitted = 0
@@ -62,7 +65,7 @@ const queryIdbByAuthors = (store: IDBObjectStore, filter: NostrFilter, emit: Emi
       const cursor = cursorReq.result
       if (!cursor || emitted >= limit) return
       const event = parseEventFromRow(cursor.value)
-      if (event && matchesFilter(event, filter)) {
+      if (event && matches(event)) {
         emit(event)
         emitted++
       }
@@ -73,6 +76,7 @@ const queryIdbByAuthors = (store: IDBObjectStore, filter: NostrFilter, emit: Emi
 }
 
 const queryIdbDefault = (store: IDBObjectStore, filter: NostrFilter, emit: Emit): void => {
+  const { matches } = compileFilter(filter)
   const limit = filter.limit ?? DEFAULT_LIMIT
   const range = IDBKeyRange.bound(filter.since ?? 0, filter.until ?? Infinity)
   const cursorReq = store.index("created_at").openCursor(range, "prev")
@@ -81,7 +85,7 @@ const queryIdbDefault = (store: IDBObjectStore, filter: NostrFilter, emit: Emit)
     const cursor = cursorReq.result
     if (!cursor || emitted >= limit) return
     const event = parseEventFromRow(cursor.value)
-    if (event && matchesFilter(event, filter)) {
+    if (event && matches(event)) {
       emit(event)
       emitted++
     }

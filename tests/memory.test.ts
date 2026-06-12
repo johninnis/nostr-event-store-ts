@@ -56,6 +56,30 @@ Deno.test("peek - generic filter honours limit and since", () => {
   assertEquals(eventStore.peek({ kinds: [1], authors: [PUBKEY_A], since: 1700000250 }).map((e) => e.id), [top.id])
 })
 
+Deno.test("peek - generic kind filter caps at limit, newest first, honouring since/until", () => {
+  const eventStore = buildStore()
+  const UNIQUE_KIND = 4242
+  for (let i = 1; i <= 6; i++) {
+    eventStore.ingest(buildEventFixture({ kind: UNIQUE_KIND, pubkey: PUBKEY_A, created_at: 1000 + i * 100 }))
+  }
+  const top = eventStore.peek({ kinds: [UNIQUE_KIND], limit: 3 })
+  assertEquals(top.map((e) => e.created_at), [1600, 1500, 1400])
+  const window = eventStore.peek({ kinds: [UNIQUE_KIND], since: 1150, until: 1350 })
+  assertEquals(window.map((e) => e.created_at), [1300, 1200])
+})
+
+Deno.test("peek - equal created_at events keep first-seen order under the bounded top-N", () => {
+  const eventStore = buildStore()
+  const UNIQUE_KIND = 4243
+  const first = buildEventFixture({ kind: UNIQUE_KIND, created_at: 2000 })
+  const second = buildEventFixture({ kind: UNIQUE_KIND, created_at: 2000 })
+  const third = buildEventFixture({ kind: UNIQUE_KIND, created_at: 2000 })
+  eventStore.ingest(first)
+  eventStore.ingest(second)
+  eventStore.ingest(third)
+  assertEquals(eventStore.peek({ kinds: [UNIQUE_KIND], limit: 2 }).map((e) => e.id), [first.id, second.id])
+})
+
 Deno.test("peek - filter with search returns empty without consulting cache", () => {
   const eventStore = buildStore()
   eventStore.ingest(buildEventFixture({ kind: 1 }))
@@ -119,6 +143,17 @@ Deno.test("cache - byReplaceableKey is bounded: the least-recently-used replacea
   )
 })
 
+Deno.test("peek - kind scan reflects replaceable cache eviction: the evicted author's event is gone", () => {
+  const eventStore = buildStore()
+  const authorAt = (i: number) => parsePublicKey(i.toString(16).padStart(64, "0"))
+  for (let i = 0; i <= REPLACEABLE_CACHE_MAX_ENTRIES; i++) {
+    eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: authorAt(i), content: "{}" }))
+  }
+  const scanned = eventStore.peek({ kinds: [KIND_METADATA], limit: REPLACEABLE_CACHE_MAX_ENTRIES + 1 })
+  assertEquals(scanned.length, REPLACEABLE_CACHE_MAX_ENTRIES)
+  assertEquals(scanned.some((e) => e.pubkey === authorAt(0)), false)
+})
+
 Deno.test("subscribe - kind-filtered listener fires when matching event ingests", () => {
   const eventStore = buildStore()
   const seen: Array<NostrEvent> = []
@@ -169,6 +204,31 @@ Deno.test("subscribe - a listener that unsubscribes mid-fire does not skip its s
   eventStore.subscribe({ kinds: [KIND_METADATA] }, () => seen.push("second"))
   eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A }))
   assertEquals(seen, ["first", "second"])
+})
+
+Deno.test("subscribe - a listener added mid-fire does not receive the in-flight event", () => {
+  const eventStore = buildStore()
+  const seen: Array<string> = []
+  eventStore.subscribe({ kinds: [KIND_METADATA] }, () => {
+    seen.push("first")
+    eventStore.subscribe({ kinds: [KIND_METADATA] }, () => seen.push("late"))
+  })
+  eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A }))
+  assertEquals(seen, ["first"])
+})
+
+Deno.test("subscribe - flat-bucket listener that unsubscribes mid-fire does not skip its siblings", () => {
+  const eventStore = buildStore()
+  const seen: Array<string> = []
+  const unsubscribeFirst = eventStore.subscribe({ authors: [PUBKEY_A] }, () => {
+    seen.push("first")
+    unsubscribeFirst()
+  })
+  eventStore.subscribe({ authors: [PUBKEY_A] }, () => seen.push("second"))
+  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  assertEquals(seen, ["first", "second"])
+  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  assertEquals(seen, ["first", "second", "second"])
 })
 
 Deno.test("subscribe - duplicate kinds in a filter fire the listener once per matching event", () => {

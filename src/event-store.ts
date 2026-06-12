@@ -1,5 +1,5 @@
 import type { EventId, NostrEvent, NostrFilter } from "@innis/nostr-core"
-import { byCreatedAtDesc, matchesFilter, replaceableStorageKey, replaceableSupersedes } from "@innis/nostr-core"
+import { byCreatedAtDesc, compileFilter, replaceableStorageKey, replaceableSupersedes } from "@innis/nostr-core"
 import { coalesce } from "./timers.ts"
 import { createEventCache } from "./event-cache.ts"
 import { parseEventFromRow, rowFromEvent } from "./event-row.ts"
@@ -42,14 +42,14 @@ export interface EventStore {
   readonly query: (filter: NostrFilter, onEvent: EventListener) => Promise<void>
   /**
    * Synchronous, memory-only sibling of `query`: the newest matching events held in the cache,
-   * honouring `limit`/`since`/`until` via `matchesFilter`. Returns `[]` for empty or `search`
+   * honouring `limit`/`since`/`until` via `compileFilter`. Returns `[]` for empty or `search`
    * filters. Use when a sync read surface is required (rendering) and a cache miss is acceptable.
    */
   readonly peek: (filter: NostrFilter) => ReadonlyArray<NostrEvent>
   /**
    * Remove every event matching `filter` from memory and IndexedDB. Throws for an empty filter
    * (which would match everything). Supports `{ ids }` or any filter carrying `authors`; the rest
-   * of the filter (`kinds`, `#d`, `since`, `until`) narrows the authored set via `matchesFilter`.
+   * of the filter (`kinds`, `#d`, `since`, `until`) narrows the authored set via `compileFilter`.
    */
   readonly delete: (filter: NostrFilter) => Promise<void>
   /**
@@ -72,8 +72,28 @@ export interface EventStoreConfig {
 }
 
 interface FilterListener {
-  readonly filter: NostrFilter
+  readonly matches: (event: NostrEvent) => boolean
   readonly fn: EventListener
+}
+
+// Bounded top-N insertion ordered by byCreatedAtDesc. Equal created_at inserts after existing
+// equals (comparator <= 0 walks right), so ties keep their first-seen order — the same result as
+// collecting every match and running a stable sort, without holding more than `limit` events.
+const insertNewestFirst = (sorted: Array<NostrEvent>, event: NostrEvent, limit: number): void => {
+  if (sorted.length >= limit) {
+    const last = sorted[sorted.length - 1]
+    if (last === undefined || byCreatedAtDesc(last, event) <= 0) return
+  }
+  let low = 0
+  let high = sorted.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    const probe = sorted[mid]
+    if (probe !== undefined && byCreatedAtDesc(probe, event) <= 0) low = mid + 1
+    else high = mid
+  }
+  sorted.splice(low, 0, event)
+  if (sorted.length > limit) sorted.pop()
 }
 
 /**
@@ -85,15 +105,18 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
   let db: IDBDatabase | null = null
   const eventCache = createEventCache()
   const pendingEntries: Array<NostrEvent> = []
-  const listenersByKind = new Map<number, Array<FilterListener>>()
-  const listenersAll: Array<FilterListener> = []
+  const listenersByKind = new Map<number, ReadonlyArray<FilterListener>>()
+  let listenersAll: ReadonlyArray<FilterListener> = []
 
   const fireFilterListeners = (event: NostrEvent): void => {
+    // Listener arrays are copy-on-write: subscribe/unsubscribe replace the array rather than
+    // mutate it, so iterating the current reference keeps the same snapshot semantics the old
+    // per-dispatch spread provided, without copying on every event.
     const kindList = listenersByKind.get(event.kind)
     if (kindList) {
-      for (const { filter, fn } of [...kindList]) if (matchesFilter(event, filter)) fn(event)
+      for (const { matches, fn } of kindList) if (matches(event)) fn(event)
     }
-    for (const { filter, fn } of [...listenersAll]) if (matchesFilter(event, filter)) fn(event)
+    for (const { matches, fn } of listenersAll) if (matches(event)) fn(event)
   }
 
   const flushPersist = (): void => {
@@ -165,12 +188,13 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
 
   const peek = (filter: NostrFilter): ReadonlyArray<NostrEvent> => {
     if (hasSearch(filter)) return []
+    const { matches } = compileFilter(filter)
 
     if (isIdsOnlyFilter(filter)) {
       const out: Array<NostrEvent> = []
       for (const id of filter.ids ?? []) {
         const event = eventCache.get(id)
-        if (event && matchesFilter(event, filter)) out.push(event)
+        if (event && matches(event)) out.push(event)
       }
       return out
     }
@@ -182,7 +206,7 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
           const key = replaceableLookupKey(kind, author)
           if (!key) continue
           const event = eventCache.getReplaceable(key)
-          if (event && matchesFilter(event, filter)) out.push(event)
+          if (event && matches(event)) out.push(event)
         }
       }
       return out
@@ -190,12 +214,15 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
 
     if (isEmptyFilter(filter)) return []
 
-    const matched: Array<NostrEvent> = []
-    for (const event of eventCache.values()) {
-      if (matchesFilter(event, filter)) matched.push(event)
+    const limit = filter.limit ?? DEFAULT_LIMIT
+    const source = filter.kinds && filter.kinds.length > 0
+      ? eventCache.valuesForKinds(filter.kinds)
+      : eventCache.values()
+    const top: Array<NostrEvent> = []
+    for (const event of source) {
+      if (matches(event)) insertNewestFirst(top, event, limit)
     }
-    matched.sort(byCreatedAtDesc)
-    return matched.slice(0, filter.limit ?? DEFAULT_LIMIT)
+    return top
   }
 
   const query = async (filter: NostrFilter, onEvent: EventListener): Promise<void> => {
@@ -242,7 +269,8 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
   }
 
   const deleteMatchingByAuthors = (filter: NostrFilter): Promise<void> => {
-    eventCache.deleteMatching((event) => matchesFilter(event, filter))
+    const { matches } = compileFilter(filter)
+    eventCache.deleteMatching(matches)
     return new Promise((resolve) => {
       if (!db) {
         resolve()
@@ -257,7 +285,7 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
           const cursor = cursorReq.result
           if (!cursor) return
           const event = parseEventFromRow(cursor.value)
-          if (event && matchesFilter(event, filter)) store.delete(cursor.primaryKey)
+          if (event && matches(event)) store.delete(cursor.primaryKey)
           cursor.continue()
         }
       }
@@ -286,34 +314,27 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
       db = null
     }
     listenersByKind.clear()
-    listenersAll.length = 0
+    listenersAll = []
   }
 
   const subscribe = (filter: NostrFilter, fn: EventListener): () => void => {
-    const entry: FilterListener = { filter, fn }
+    const entry: FilterListener = { matches: compileFilter(filter).matches, fn }
     if (filter.kinds && filter.kinds.length > 0) {
       const kinds = new Set(filter.kinds)
       for (const kind of kinds) {
-        let list = listenersByKind.get(kind)
-        if (!list) {
-          list = []
-          listenersByKind.set(kind, list)
-        }
-        list.push(entry)
+        listenersByKind.set(kind, [...listenersByKind.get(kind) ?? [], entry])
       }
       return (): void => {
         for (const kind of kinds) {
-          const list = listenersByKind.get(kind)
-          if (!list) continue
-          const idx = list.indexOf(entry)
-          if (idx >= 0) list.splice(idx, 1)
+          const remaining = (listenersByKind.get(kind) ?? []).filter((e) => e !== entry)
+          if (remaining.length === 0) listenersByKind.delete(kind)
+          else listenersByKind.set(kind, remaining)
         }
       }
     }
-    listenersAll.push(entry)
+    listenersAll = [...listenersAll, entry]
     return (): void => {
-      const idx = listenersAll.indexOf(entry)
-      if (idx >= 0) listenersAll.splice(idx, 1)
+      listenersAll = listenersAll.filter((e) => e !== entry)
     }
   }
 
