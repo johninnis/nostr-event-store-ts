@@ -27,15 +27,15 @@
     "fmt": "deno fmt",
     "fmt:check": "deno fmt --check",
     "test": "deno test -A",
-    "coverage": "rm -rf cov_profile && deno test -A --coverage=cov_profile && deno coverage cov_profile --lcov --output=cov_profile/lcov.info && deno coverage cov_profile && deno run --allow-read scripts/check-coverage.ts",
-    "exports-tested": "deno run --allow-read --allow-run scripts/check-exports-tested.ts",
-    "docs": "deno run --allow-read --allow-run scripts/check-docs.ts",
+    "coverage": "rm -rf cov_profile && deno test -A --coverage=cov_profile && deno coverage cov_profile --lcov --output=cov_profile/lcov.info && deno coverage cov_profile && deno run --allow-read jsr:@innis/coding-standards@^0.1.0/check-coverage",
+    "exports-tested": "deno run --allow-read --allow-run jsr:@innis/coding-standards@^0.1.0/check-exports-tested",
+    "docs": "deno run --allow-read --allow-run jsr:@innis/coding-standards@^0.1.0/check-docs",
     "publish:dry": "deno publish --dry-run",
     "ci": "deno task fmt:check && deno task lint && deno task check && deno task coverage && deno task exports-tested && deno task docs"
   },
   "lint": {
     "plugins": [
-      "./scripts/lint-plugins/innis-rules.ts"
+      "jsr:@innis/coding-standards@^0.1.0/lint-plugin"
     ],
     "rules": {
       "include": [
