@@ -1,6 +1,9 @@
 {
   "name": "@innis/nostr-event-store",
   "version": "0.1.1",
+  "publish": {
+    "exclude": ["tests/", "deno.lock", ".github/"]
+  },
   "license": "MIT",
   "description": "In-memory event cache + IndexedDB-backed event store for Nostr events. One NIP-01 filter language across memory, IndexedDB, peek, and subscriptions; atomic replaceable writes via a unique index.",
   "exports": "./mod.ts",
