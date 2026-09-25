@@ -22,7 +22,14 @@ export const buildEventFixture = (overrides: Partial<NostrEvent> = {}): NostrEve
   }
 }
 
-export const buildStore = (): EventStore => createEventStore()
+const openStores = new Set<EventStore>()
+
+/** A store whose connection `freshIdbStore` closes before it deletes the database, so no test leaks one. */
+export const buildStore = (): EventStore => {
+  const store = createEventStore()
+  openStores.add(store)
+  return store
+}
 
 export const rowFor = (event: NostrEvent): Record<string, unknown> => ({
   id: event.id,
@@ -33,11 +40,13 @@ export const rowFor = (event: NostrEvent): Record<string, unknown> => ({
 })
 
 export const freshIdbStore = async (): Promise<EventStore> => {
+  for (const store of openStores) store.close()
+  openStores.clear()
   await new Promise<void>((resolve, reject) => {
     const req = indexedDB.deleteDatabase("nostr-events")
     req.onsuccess = (): void => resolve()
     req.onerror = (): void => reject(req.error)
-    req.onblocked = (): void => resolve()
+    req.onblocked = (): void => reject(new Error("deleteDatabase blocked: a test left a connection open"))
   })
   const store = buildStore()
   await store.init()
