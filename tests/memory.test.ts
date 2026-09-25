@@ -253,6 +253,18 @@ Deno.test("delete - { ids } removes events from memory", () => {
   assertEquals(eventStore.peek({ ids: [a.id] }).length, 0)
 })
 
+Deno.test("delete - { ids, authors } removes only the listed ids by those authors", () => {
+  const eventStore = buildStore()
+  const alice = parsePublicKey("a".repeat(64))
+  const bob = parsePublicKey("b".repeat(64))
+  const byAlice = buildEventFixture({ id: parseEventId("12".padEnd(64, "0")), pubkey: alice })
+  const byBob = buildEventFixture({ id: parseEventId("13".padEnd(64, "0")), pubkey: bob })
+  eventStore.ingest(byAlice)
+  eventStore.ingest(byBob)
+  eventStore.delete({ ids: [byAlice.id, byBob.id], authors: [bob] })
+  assertEquals(eventStore.peek({ ids: [byAlice.id, byBob.id] }).map((e) => e.id), [byAlice.id])
+})
+
 Deno.test("delete - { authors } clears every event by that author from memory", () => {
   const eventStore = buildStore()
   eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_A, id: parseEventId("aa".padEnd(64, "0")) }))

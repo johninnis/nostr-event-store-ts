@@ -18,4 +18,4 @@
  * @module
  */
 export { createEventStore } from "./src/event-store.ts"
-export type { EventStore, EventStoreConfig } from "./src/event-store.ts"
+export type { EventStore, EventStoreConfig, SubscribeOptions } from "./src/event-store.ts"

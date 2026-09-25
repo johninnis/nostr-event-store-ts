@@ -24,10 +24,26 @@ await store.init()
 | `query(filter, onEvent)` | async | Memory first, then IDB. Memory hits emit synchronously; IDB hits warm the cache then emit. Deduplicated by event id. Warming a backfilled event does **not** fire `subscribe` listeners — backfill is a read, not a live ingest. |
 | `peek(filter)` | sync, returns array | Memory-only sibling of `query`. Serves ids-only and all-replaceable filters from their dedicated maps; any other shape walks the in-memory cache, newest-first, honouring `limit`/`since`/`until` via `matchesFilter`. Returns `[]` for empty or `search` filters. |
 | `delete(filter)` | async | Walks memory and IDB. Refuses an empty filter. Two shapes: `{ ids }` (delete by id), or any filter carrying `authors` — every event by those authors that also satisfies the rest of the filter (`kinds`, `#d`, `since`, `until`) via `matchesFilter` is removed. |
-| `subscribe(filter, fn)` | sync, returns unsubscribe | Fires `fn(event)` on every live `ingest` whose event matches `filter` (not on `query` backfill). Kind-indexed when `filter.kinds` is set; flat bucket otherwise. |
+| `subscribe(filter, fn, options?)` | sync, returns unsubscribe | Fires `fn(event)` on every live `ingest` whose event matches `filter` (not on `query` backfill). Kind-indexed when `filter.kinds` is set; flat bucket otherwise. `{ replay: true }` also delivers the stored matches first — see [Replaying stored events](#replaying-stored-events). |
 | `close()` | sync, idempotent | Flush pending writes, cancel the deferred-flush timer, close the IDB connection, drop subscribers. The store is inert until `init()` reopens it. |
 
 Reads are always filter-based: to fetch by id use `peek({ ids: [...] })` or `query({ ids: [...] })` — the same filter shape as anywhere else. There is no separate id getter.
+
+## Replaying stored events
+
+`subscribe(filter, fn, { replay: true })` is the store's `REQ`: stored events first, then live, through one handler.
+
+```ts
+const unsubscribe = store.subscribe({ kinds: [10000], authors: [pubkey] }, applyList, { replay: true })
+```
+
+- The live listener is registered **before** the stored read starts, so nothing ingested during the read is missed.
+- Stored matches are streamed exactly as `query` delivers them — memory synchronously (before `subscribe` returns), then IndexedDB. It is `query` itself, not a second read path.
+- Each event id reaches `fn` **at most once** across the replay/live boundary. While the replay runs, a set of the ids delivered so far guards both sources; it is dropped when the IndexedDB pass resolves, after which `ingest`'s own dedup is the only guard the live path needs.
+- Ordering: replayed events arrive in `query` order, live events as they are ingested. A live event can therefore precede an older replayed one — sort in the handler if order matters.
+- Unsubscribing during the replay stops further delivery from both sources.
+
+Without the option (or with `replay: false`) `subscribe` is live-only, as before, and `query` never notifies subscribers.
 
 ## Storage shape
 

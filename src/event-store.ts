@@ -1,5 +1,11 @@
 import type { EventId, NostrEvent, NostrFilter } from "@innis/nostr-core"
-import { byCreatedAtDesc, compileFilter, replaceableStorageKey, replaceableSupersedes } from "@innis/nostr-core"
+import {
+  byCreatedAtDesc,
+  compileFilter,
+  replaceableStorageKey,
+  replaceableSupersedes,
+  reportUnhandledError,
+} from "@innis/nostr-core"
 import { coalesce } from "./timers.ts"
 import { createEventCache } from "./event-cache.ts"
 import { parseEventFromRow, rowFromEvent } from "./event-row.ts"
@@ -47,22 +53,40 @@ export interface EventStore {
    */
   readonly peek: (filter: NostrFilter) => ReadonlyArray<NostrEvent>
   /**
-   * Remove every event matching `filter` from memory and IndexedDB. Throws for an empty filter
-   * (which would match everything). Supports `{ ids }` or any filter carrying `authors`; the rest
-   * of the filter (`kinds`, `#d`, `since`, `until`) narrows the authored set via `compileFilter`.
+   * Remove every event matching the whole of `filter` from memory and IndexedDB. Throws for an
+   * empty filter (which would match everything). Supports `{ ids }` or any filter carrying
+   * `authors`; the rest of the filter (`authors`, `kinds`, `#d`, `since`, `until`) narrows the
+   * candidate set via `compileFilter`, so `{ ids, authors }` removes only those ids by those authors.
    */
   readonly delete: (filter: NostrFilter) => Promise<void>
   /**
    * Register `fn` to fire on every subsequent live `ingest` whose event matches `filter` (not on
    * `query` backfill from IndexedDB). Returns an unsubscribe function. Kind-indexed when
    * `filter.kinds` is set, otherwise a flat bucket.
+   *
+   * With `{ replay: true }` the subscription behaves like a Nostr `REQ`: stored events first, then
+   * live. The live listener is registered before the stored read starts, then every stored match is
+   * streamed through `fn` exactly as `query` would deliver it (memory synchronously, before
+   * `subscribe` returns, then IndexedDB). Each event id reaches `fn` at most once across the
+   * replay/live boundary. Replayed events arrive in `query` order and live events as they are
+   * ingested, so a live event can precede an older replayed one. Unsubscribing during the replay
+   * stops further delivery from both sources.
    */
-  readonly subscribe: (filter: NostrFilter, fn: EventListener) => () => void
+  readonly subscribe: (filter: NostrFilter, fn: EventListener, options?: SubscribeOptions) => () => void
   /**
    * Flush any pending writes, cancel the deferred-flush timer, close the IndexedDB connection, and
    * drop all subscribers. Idempotent. After `close()` the store is inert — `init()` reopens it.
    */
   readonly close: () => void
+}
+
+/** Options for {@link EventStore.subscribe}. */
+export interface SubscribeOptions {
+  /**
+   * Deliver the stored events matching the filter (memory, then IndexedDB) before and alongside
+   * live ingests, each event id at most once. Defaults to `false`: live ingests only.
+   */
+  readonly replay?: boolean
 }
 
 /** Construction options for {@link createEventStore}. */
@@ -250,8 +274,13 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
     await queryIdb(db, filter, onIdbHit)
   }
 
-  const deleteByIds = (ids: ReadonlyArray<EventId>): Promise<void> => {
-    for (const id of ids) eventCache.delete(id)
+  const deleteByIds = (filter: NostrFilter): Promise<void> => {
+    const { matches } = compileFilter(filter)
+    const ids = filter.ids ?? []
+    for (const id of ids) {
+      const cached = eventCache.get(id)
+      if (cached && matches(cached)) eventCache.delete(id)
+    }
     return new Promise((resolve) => {
       if (!db) {
         resolve()
@@ -259,7 +288,13 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
       }
       const tx = db.transaction(EVENTS_STORE, "readwrite")
       const store = tx.objectStore(EVENTS_STORE)
-      for (const id of ids) store.delete(id)
+      for (const id of ids) {
+        const getReq = store.get(id)
+        getReq.onsuccess = (): void => {
+          const event = parseEventFromRow(getReq.result)
+          if (event && matches(event)) store.delete(id)
+        }
+      }
       tx.oncomplete = (): void => resolve()
       tx.onerror = (): void => {
         reportIdbError(tx.error)
@@ -301,7 +336,7 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
     if (isEmptyFilter(filter)) {
       throw new Error("eventStore.delete: empty filter is forbidden (would match every event)")
     }
-    if (filter.ids && filter.ids.length > 0) return deleteByIds(filter.ids)
+    if (filter.ids && filter.ids.length > 0) return deleteByIds(filter)
     if (filter.authors && filter.authors.length > 0) return deleteMatchingByAuthors(filter)
     throw new Error("eventStore.delete: unsupported filter shape (require ids or authors)")
   }
@@ -317,7 +352,7 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
     listenersAll = []
   }
 
-  const subscribe = (filter: NostrFilter, fn: EventListener): () => void => {
+  const addListener = (filter: NostrFilter, fn: EventListener): () => void => {
     const entry: FilterListener = { matches: compileFilter(filter).matches, fn }
     if (filter.kinds && filter.kinds.length > 0) {
       const kinds = new Set(filter.kinds)
@@ -337,6 +372,34 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
       listenersAll = listenersAll.filter((e) => e !== entry)
     }
   }
+
+  // The delivered-id set only lives for the replay pass: it holds at most the replayed matches plus
+  // the live arrivals that overlap them, and is dropped once the stored read resolves, after which
+  // the store's own ingest dedup is the only guard the live path needs.
+  const subscribeWithReplay = (filter: NostrFilter, fn: EventListener): () => void => {
+    let active = true
+    let deliveredDuringReplay: Set<EventId> | null = new Set()
+    const deliverOnce = (event: NostrEvent): void => {
+      if (!active) return
+      if (deliveredDuringReplay) {
+        if (deliveredDuringReplay.has(event.id)) return
+        deliveredDuringReplay.add(event.id)
+      }
+      fn(event)
+    }
+    const removeListener = addListener(filter, deliverOnce)
+    query(filter, deliverOnce).then(() => {
+      deliveredDuringReplay = null
+    }, reportUnhandledError)
+    return (): void => {
+      active = false
+      deliveredDuringReplay = null
+      removeListener()
+    }
+  }
+
+  const subscribe = (filter: NostrFilter, fn: EventListener, options: SubscribeOptions = {}): () => void =>
+    options.replay ? subscribeWithReplay(filter, fn) : addListener(filter, fn)
 
   return Object.freeze({
     init,
