@@ -1,5 +1,5 @@
 import type { EventId, NostrEvent } from "@innis/nostr-core"
-import { replaceableStorageKey, replaceableSupersedes } from "@innis/nostr-core"
+import { kindCategory, replaceableStorageKey, replaceableSupersedes } from "@innis/nostr-core"
 import { CACHE_MAX_ENTRIES, REPLACEABLE_CACHE_MAX_ENTRIES } from "./constants.ts"
 
 export interface EventCache {
@@ -83,6 +83,7 @@ export const createEventCache = (): EventCache => {
 
   const put = (event: NostrEvent): boolean => {
     const rkey = replaceableStorageKey(event)
+    if (rkey === null && kindCategory(event.kind) === "addressable") return false
     if (!rkey) {
       const isNew = !byId.has(event.id)
       setById(event)

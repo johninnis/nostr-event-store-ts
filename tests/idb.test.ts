@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert"
 import type { NostrEvent } from "@innis/nostr-core"
-import { KIND_CONTACT_LIST, KIND_RELAY_LIST, KIND_SHORT_NOTE } from "@innis/nostr-core"
+import { KIND_FOLLOW_LIST, KIND_RELAY_LIST, KIND_TEXT_NOTE } from "@innis/nostr-core"
+import { eventIdFixture } from "@innis/nostr-core/testing"
 import { EVENTS_STORE } from "../src/constants.ts"
 import { buildEventFixture, buildStore, freshIdbStore, PUBKEY_A, PUBKEY_B } from "./_helpers/fixtures.ts"
 
@@ -19,7 +20,7 @@ Deno.test("idb integration - init opens v1 with no eager walk; ingest persists; 
   inspect.close()
 
   // init() must NOT eager-walk: memory starts empty even after init
-  const note = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, content: "from idb" })
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, content: "from idb" })
   eventStore.ingest(note)
   await new Promise((r) => setTimeout(r, 100))
 
@@ -60,7 +61,7 @@ Deno.test("idb integration - init opens v1 with no eager walk; ingest persists; 
 
 Deno.test("idb integration - event ingested before init() still persists once the DB opens", async () => {
   const eventStore = buildStore()
-  const early = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, content: "before init" })
+  const early = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, content: "before init" })
   eventStore.ingest(early)
   await eventStore.init()
   await new Promise((r) => setTimeout(r, 100))
@@ -76,13 +77,13 @@ Deno.test("idb integration - event ingested before init() still persists once th
 Deno.test("query - returns empty for a filter that has a search clause", async () => {
   const eventStore = await freshIdbStore()
   const hits: Array<NostrEvent> = []
-  await eventStore.query({ kinds: [KIND_SHORT_NOTE], search: "hello" }, (e) => hits.push(e))
+  await eventStore.query({ kinds: [KIND_TEXT_NOTE], search: "hello" }, (e) => hits.push(e))
   assertEquals(hits.length, 0)
 })
 
 Deno.test("query - empty filter emits nothing, matching peek (no all-events dump)", async () => {
   const eventStore = await freshIdbStore()
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A }))
   await new Promise((r) => setTimeout(r, 100))
   const cold = buildStore()
   await cold.init()
@@ -94,10 +95,10 @@ Deno.test("query - empty filter emits nothing, matching peek (no all-events dump
   eventStore.close()
 })
 
-Deno.test("query - hits queryIdbByAuthors path and respects limit", async () => {
+Deno.test("query - an authors read from IDB respects limit", async () => {
   const eventStore = await freshIdbStore()
   for (let i = 0; i < 5; i++) {
-    eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 1700000000 + i }))
+    eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 1700000000 + i }))
   }
   await new Promise((r) => setTimeout(r, 100))
   const cold = buildStore()
@@ -107,11 +108,11 @@ Deno.test("query - hits queryIdbByAuthors path and respects limit", async () => 
   assertEquals(hits.length, 2)
 })
 
-Deno.test("query - hits queryIdbByAuthors with since/until bounds", async () => {
+Deno.test("query - an authors read from IDB honours since/until", async () => {
   const eventStore = await freshIdbStore()
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 1000 }))
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 2000 }))
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 3000 }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 1000 }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 2000 }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 3000 }))
   await new Promise((r) => setTimeout(r, 100))
   const cold = buildStore()
   await cold.init()
@@ -121,7 +122,7 @@ Deno.test("query - hits queryIdbByAuthors with since/until bounds", async () => 
   assertEquals(hits[0]?.created_at, 2000)
 })
 
-Deno.test("query - falls back to queryIdbDefault when no authors and no ids", async () => {
+Deno.test("query - a read with no authors and no ids scans IDB by created_at", async () => {
   const eventStore = await freshIdbStore()
   const UNIQUE_KIND = 9999
   eventStore.ingest(buildEventFixture({ kind: UNIQUE_KIND, pubkey: PUBKEY_A, created_at: 1000 }))
@@ -136,7 +137,7 @@ Deno.test("query - falls back to queryIdbDefault when no authors and no ids", as
 
 Deno.test("query - ids-only filter via IDB returns the persisted event", async () => {
   const eventStore = await freshIdbStore()
-  const event = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A })
+  const event = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
   eventStore.ingest(event)
   await new Promise((r) => setTimeout(r, 100))
   const cold = buildStore()
@@ -148,8 +149,8 @@ Deno.test("query - ids-only filter via IDB returns the persisted event", async (
 
 Deno.test("query - ids-only consults IDB only for the ids memory cannot answer", async () => {
   const eventStore = await freshIdbStore()
-  const a = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A })
-  const b = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A })
+  const a = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
+  const b = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
   eventStore.ingest(a)
   eventStore.ingest(b)
   await new Promise((r) => setTimeout(r, 100))
@@ -178,14 +179,14 @@ Deno.test("query - ids-only fully served from memory resolves without an open da
 
 Deno.test("query - backfill from IDB warms memory but does not fire subscribers (live ingest only)", async () => {
   const eventStore = await freshIdbStore()
-  const note = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A })
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
   eventStore.ingest(note)
   await new Promise((r) => setTimeout(r, 100))
 
   const cold = buildStore()
   await cold.init()
   const fired: Array<NostrEvent> = []
-  cold.subscribe({ kinds: [KIND_SHORT_NOTE] }, (e) => fired.push(e))
+  cold.subscribe({ kinds: [KIND_TEXT_NOTE] }, (e) => fired.push(e))
 
   const hits: Array<NostrEvent> = []
   await cold.query({ ids: [note.id] }, (e) => hits.push(e))
@@ -199,13 +200,13 @@ Deno.test("query - backfill from IDB warms memory but does not fire subscribers 
 
 Deno.test("query - replaceable lookup via IDB returns the newest atomically", async () => {
   const eventStore = await freshIdbStore()
-  eventStore.ingest(buildEventFixture({ kind: KIND_CONTACT_LIST, pubkey: PUBKEY_A, created_at: 1000 }))
-  eventStore.ingest(buildEventFixture({ kind: KIND_CONTACT_LIST, pubkey: PUBKEY_A, created_at: 2000 }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_FOLLOW_LIST, pubkey: PUBKEY_A, created_at: 1000 }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_FOLLOW_LIST, pubkey: PUBKEY_A, created_at: 2000 }))
   await new Promise((r) => setTimeout(r, 100))
   const cold = buildStore()
   await cold.init()
   const hits: Array<NostrEvent> = []
-  await cold.query({ kinds: [KIND_CONTACT_LIST], authors: [PUBKEY_A] }, (e) => hits.push(e))
+  await cold.query({ kinds: [KIND_FOLLOW_LIST], authors: [PUBKEY_A] }, (e) => hits.push(e))
   assertEquals(hits.length, 1)
   assertEquals(hits[0]?.created_at, 2000)
 })
@@ -237,12 +238,12 @@ Deno.test("idb - precedence-aware flush: an older replaceable from a cold store 
 
 Deno.test("delete - { kinds, authors } clears non-replaceable matches from IDB too", async () => {
   const eventStore = await freshIdbStore()
-  const note = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 1000 })
-  const other = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_B, created_at: 2000 })
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 1000 })
+  const other = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_B, created_at: 2000 })
   eventStore.ingest(note)
   eventStore.ingest(other)
   await new Promise((r) => setTimeout(r, 100))
-  await eventStore.delete({ kinds: [KIND_SHORT_NOTE], authors: [PUBKEY_A] })
+  await eventStore.delete({ kinds: [KIND_TEXT_NOTE], authors: [PUBKEY_A] })
 
   const cold = buildStore()
   await cold.init()
@@ -258,8 +259,8 @@ Deno.test("delete - { kinds, authors } clears non-replaceable matches from IDB t
 
 Deno.test("delete - { authors, since } removes only events inside the time window, in IDB too", async () => {
   const eventStore = await freshIdbStore()
-  const oldNote = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 1000 })
-  const newNote = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, created_at: 3000 })
+  const oldNote = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 1000 })
+  const newNote = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, created_at: 3000 })
   eventStore.ingest(oldNote)
   eventStore.ingest(newNote)
   await new Promise((r) => setTimeout(r, 100))
@@ -279,7 +280,7 @@ Deno.test("delete - { authors, since } removes only events inside the time windo
 
 Deno.test("close - flushes pending writes then closes; a cold store reads them back", async () => {
   const eventStore = await freshIdbStore()
-  const note = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, content: "flush on close" })
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, content: "flush on close" })
   eventStore.ingest(note)
   eventStore.close()
   await new Promise((r) => setTimeout(r, 100))
@@ -297,7 +298,7 @@ Deno.test("close - init after close reopens the store", async () => {
   const eventStore = await freshIdbStore()
   eventStore.close()
   await eventStore.init()
-  const note = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, content: "after reopen" })
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, content: "after reopen" })
   eventStore.ingest(note)
   await new Promise((r) => setTimeout(r, 100))
 
@@ -308,4 +309,54 @@ Deno.test("close - init after close reopens the store", async () => {
   assertEquals(hits.length, 1)
   eventStore.close()
   cold.close()
+})
+
+Deno.test("query - limit caps an ids lookup read from IDB, and limit 0 reads nothing (NIP-01)", async () => {
+  const eventStore = await freshIdbStore()
+  const a = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
+  const b = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
+  eventStore.ingest(a)
+  eventStore.ingest(b)
+  await new Promise((r) => setTimeout(r, 100))
+
+  const cold = buildStore()
+  await cold.init()
+  const none: Array<NostrEvent> = []
+  await cold.query({ ids: [a.id, b.id], limit: 0 }, (e) => none.push(e))
+  assertEquals(none, [])
+  const one: Array<NostrEvent> = []
+  await cold.query({ ids: [a.id, b.id, a.id], limit: 1 }, (e) => one.push(e))
+  assertEquals(one.map((e) => e.id), [b.id])
+  cold.close()
+  eventStore.close()
+})
+
+Deno.test("query - an IDB read across several authors returns the newest overall, not the first per cursor (NIP-01)", async () => {
+  const eventStore = await freshIdbStore()
+  const oldA = buildEventFixture({ pubkey: PUBKEY_A, created_at: 100 })
+  const newB = buildEventFixture({ pubkey: PUBKEY_B, created_at: 300 })
+  const midB = buildEventFixture({ pubkey: PUBKEY_B, created_at: 200 })
+  for (const event of [oldA, newB, midB]) eventStore.ingest(event)
+  await new Promise((r) => setTimeout(r, 100))
+
+  const cold = buildStore()
+  await cold.init()
+  const hits: Array<NostrEvent> = []
+  await cold.query({ authors: [PUBKEY_A, PUBKEY_B], limit: 2 }, (e) => hits.push(e))
+  assertEquals(hits.map((e) => e.id), [newB.id, midB.id])
+})
+
+Deno.test("query - an IDB scan breaks a created_at tie by lowest id (NIP-01)", async () => {
+  const eventStore = await freshIdbStore()
+  const low = buildEventFixture({ id: eventIdFixture("1".repeat(64)), created_at: 500 })
+  const high = buildEventFixture({ id: eventIdFixture("f".repeat(64)), created_at: 500 })
+  eventStore.ingest(high)
+  eventStore.ingest(low)
+  await new Promise((r) => setTimeout(r, 100))
+
+  const cold = buildStore()
+  await cold.init()
+  const hits: Array<NostrEvent> = []
+  await cold.query({ kinds: [KIND_TEXT_NOTE], limit: 1 }, (e) => hits.push(e))
+  assertEquals(hits.map((e) => e.id), [low.id])
 })

@@ -1,23 +1,28 @@
-import type { EventId, NostrEvent, NostrFilter } from "@innis/nostr-core"
+import type { Clock, EventId, NostrEvent, NostrFilter } from "@innis/nostr-core"
 import {
-  byCreatedAtDesc,
   compileFilter,
+  isEventExpired,
+  kindCategory,
+  now,
   replaceableStorageKey,
   replaceableSupersedes,
-  reportUnhandledError,
 } from "@innis/nostr-core"
 import { coalesce } from "./timers.ts"
+import { reportUnhandledError } from "./unhandled-error.ts"
 import { createEventCache } from "./event-cache.ts"
+import { insertInLimitOrder } from "./limit-order.ts"
 import { parseEventFromRow, rowFromEvent } from "./event-row.ts"
 import {
+  compileServable,
   hasSearch,
   isEmptyFilter,
   isIdsOnlyFilter,
   isReplaceableLookupFilter,
-  replaceableLookupKey,
+  readLimit,
+  replaceableLookupKeys,
 } from "./filter-shape.ts"
 import { authorCreatedAtRange, queryIdb, reportIdbError } from "./idb-query.ts"
-import { DB_VERSION, DEFAULT_DB_NAME, DEFAULT_LIMIT, EVENTS_STORE, PERSIST_FLUSH_MS } from "./constants.ts"
+import { DB_VERSION, DEFAULT_DB_NAME, EVENTS_STORE, PERSIST_FLUSH_MS } from "./constants.ts"
 
 type EventListener = (event: NostrEvent) => void
 
@@ -33,23 +38,25 @@ export interface EventStore {
    */
   readonly init: () => Promise<void>
   /**
-   * Store an event, deduplicating against the in-memory cache and (when present) IndexedDB.
+   * Store an event, deduplicating against the in-memory cache and (when present) IndexedDB. An
+   * ephemeral event (kinds 20000–29999, NIP-01) is held in memory only and never persisted.
    * Returns `true` if the event was newly stored — a fresh id, or a replaceable event newer than
-   * the one held — and `false` if it was a duplicate or stale. Callers can gate once-per-event side
+   * the one held — and `false` if it was a duplicate, stale, expired at the store's clock (NIP-40),
+   * or an addressable event whose `d` tags disagree and so name no one identifier to store it under. Callers can gate once-per-event side
    * effects (forwarding, counting) on the return rather than maintaining their own seen-set.
    */
   readonly ingest: (event: NostrEvent) => boolean
   /**
    * Stream every stored event matching `filter` to `onEvent`, memory first then IndexedDB,
-   * deduplicated by event id. IndexedDB hits warm the in-memory cache as they surface, but warming
+   * deduplicated by event id, skipping any event expired at the store's clock (NIP-40). IndexedDB hits warm the in-memory cache as they surface, but warming
    * a backfilled event does not fire `subscribe` listeners — backfill is a read, not a live ingest.
    * Resolves once the IndexedDB pass completes. `search` and empty filters resolve with no emissions.
    */
   readonly query: (filter: NostrFilter, onEvent: EventListener) => Promise<void>
   /**
-   * Synchronous, memory-only sibling of `query`: the newest matching events held in the cache,
-   * honouring `limit`/`since`/`until` via `compileFilter`. Returns `[]` for empty or `search`
-   * filters. Use when a sync read surface is required (rendering) and a cache miss is acceptable.
+   * Synchronous, memory-only sibling of `query`: the unexpired (NIP-40) matching events held in the cache, newest first
+   * and, on a `created_at` tie, lowest id first (NIP-01), cut to `limit` (50 for a scan when unset, every
+   * match for an `ids` or replaceable lookup). Returns `[]` for empty or `search` filters. Use when a sync read surface is required (rendering) and a cache miss is acceptable.
    */
   readonly peek: (filter: NostrFilter) => ReadonlyArray<NostrEvent>
   /**
@@ -57,6 +64,8 @@ export interface EventStore {
    * empty filter (which would match everything). Supports `{ ids }` or any filter carrying
    * `authors`; the rest of the filter (`authors`, `kinds`, `#d`, `since`, `until`) narrows the
    * candidate set via `compileFilter`, so `{ ids, authors }` removes only those ids by those authors.
+   * The store never acts on a NIP-09 deletion request itself: the caller decides which to honour and
+   * calls `delete` for them.
    */
   readonly delete: (filter: NostrFilter) => Promise<void>
   /**
@@ -93,31 +102,16 @@ export interface SubscribeOptions {
 export interface EventStoreConfig {
   /** Name of the backing IndexedDB database. Defaults to `"nostr-events"`. */
   readonly databaseName?: string
+  /**
+   * The clock NIP-40 expiry is judged against, in Unix seconds: `ingest` drops an event whose
+   * `expiration` is at or before it, and every read skips one. Defaults to `now` from `@innis/nostr-core`.
+   */
+  readonly clock?: Clock
 }
 
 interface FilterListener {
   readonly matches: (event: NostrEvent) => boolean
   readonly fn: EventListener
-}
-
-// Bounded top-N insertion ordered by byCreatedAtDesc. Equal created_at inserts after existing
-// equals (comparator <= 0 walks right), so ties keep their first-seen order — the same result as
-// collecting every match and running a stable sort, without holding more than `limit` events.
-const insertNewestFirst = (sorted: Array<NostrEvent>, event: NostrEvent, limit: number): void => {
-  if (sorted.length >= limit) {
-    const last = sorted[sorted.length - 1]
-    if (last === undefined || byCreatedAtDesc(last, event) <= 0) return
-  }
-  let low = 0
-  let high = sorted.length
-  while (low < high) {
-    const mid = (low + high) >>> 1
-    const probe = sorted[mid]
-    if (probe !== undefined && byCreatedAtDesc(probe, event) <= 0) low = mid + 1
-    else high = mid
-  }
-  sorted.splice(low, 0, event)
-  if (sorted.length > limit) sorted.pop()
 }
 
 /**
@@ -126,6 +120,7 @@ const insertNewestFirst = (sorted: Array<NostrEvent>, event: NostrEvent, limit: 
  */
 export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
   const databaseName = config.databaseName ?? DEFAULT_DB_NAME
+  const clock = config.clock ?? now
   let db: IDBDatabase | null = null
   const eventCache = createEventCache()
   const pendingEntries: Array<NostrEvent> = []
@@ -133,9 +128,6 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
   let listenersAll: ReadonlyArray<FilterListener> = []
 
   const fireFilterListeners = (event: NostrEvent): void => {
-    // Listener arrays are copy-on-write: subscribe/unsubscribe replace the array rather than
-    // mutate it, so iterating the current reference keeps the same snapshot semantics the old
-    // per-dispatch spread provided, without copying on every event.
     const kindList = listenersByKind.get(event.kind)
     if (kindList) {
       for (const { matches, fn } of kindList) if (matches(event)) fn(event)
@@ -203,51 +195,48 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
     })
 
   const ingest = (event: NostrEvent): boolean => {
+    if (isEventExpired(event, clock())) return false
     if (!eventCache.put(event)) return false
     fireFilterListeners(event)
+    if (kindCategory(event.kind) === "ephemeral") return true
     pendingEntries.push(event)
     if (db) schedulePersistFlush()
     return true
   }
 
-  const peek = (filter: NostrFilter): ReadonlyArray<NostrEvent> => {
-    if (hasSearch(filter)) return []
-    const { matches } = compileFilter(filter)
-
+  function* cachedCandidates(filter: NostrFilter): Generator<NostrEvent> {
     if (isIdsOnlyFilter(filter)) {
-      const out: Array<NostrEvent> = []
-      for (const id of filter.ids ?? []) {
+      for (const id of new Set(filter.ids)) {
         const event = eventCache.get(id)
-        if (event && matches(event)) out.push(event)
+        if (event) yield event
       }
-      return out
+      return
     }
-
     if (isReplaceableLookupFilter(filter)) {
-      const out: Array<NostrEvent> = []
-      for (const kind of filter.kinds ?? []) {
-        for (const author of filter.authors ?? []) {
-          const key = replaceableLookupKey(kind, author)
-          if (!key) continue
-          const event = eventCache.getReplaceable(key)
-          if (event && matches(event)) out.push(event)
-        }
+      for (const key of replaceableLookupKeys(filter)) {
+        const event = eventCache.getReplaceable(key)
+        if (event) yield event
       }
-      return out
+      return
     }
-
-    if (isEmptyFilter(filter)) return []
-
-    const limit = filter.limit ?? DEFAULT_LIMIT
-    const source = filter.kinds && filter.kinds.length > 0
-      ? eventCache.valuesForKinds(filter.kinds)
-      : eventCache.values()
-    const top: Array<NostrEvent> = []
-    for (const event of source) {
-      if (matches(event)) insertNewestFirst(top, event, limit)
-    }
-    return top
+    yield* filter.kinds && filter.kinds.length > 0 ? eventCache.valuesForKinds(filter.kinds) : eventCache.values()
   }
+
+  const readMemory = (filter: NostrFilter, at: number): ReadonlyArray<NostrEvent> => {
+    const limit = readLimit(filter)
+    if (hasSearch(filter) || isEmptyFilter(filter) || limit === 0) return []
+    const servable = compileServable(filter, at)
+    const sorted: Array<NostrEvent> = []
+    for (const event of cachedCandidates(filter)) {
+      if (servable(event)) insertInLimitOrder(sorted, event, limit)
+    }
+    return sorted
+  }
+
+  const peek = (filter: NostrFilter): ReadonlyArray<NostrEvent> => readMemory(filter, clock())
+
+  const withoutServedIds = (filter: NostrFilter, served: ReadonlySet<EventId>): NostrFilter =>
+    isIdsOnlyFilter(filter) ? { ...filter, ids: (filter.ids ?? []).filter((id) => !served.has(id)) } : filter
 
   const query = async (filter: NostrFilter, onEvent: EventListener): Promise<void> => {
     if (hasSearch(filter)) return
@@ -257,21 +246,12 @@ export const createEventStore = (config: EventStoreConfig = {}): EventStore => {
       seen.add(event.id)
       onEvent(event)
     }
-    for (const event of peek(filter)) emit(event)
-
-    const onIdbHit = (event: NostrEvent): void => {
+    const at = clock()
+    for (const event of readMemory(filter, at)) emit(event)
+    for (const event of await queryIdb(db, withoutServedIds(filter, seen), at)) {
       eventCache.put(event)
       emit(event)
     }
-
-    if (isIdsOnlyFilter(filter)) {
-      const missing = (filter.ids ?? []).filter((id) => !seen.has(id))
-      if (missing.length === 0) return
-      await queryIdb(db, { ...filter, ids: missing }, onIdbHit)
-      return
-    }
-
-    await queryIdb(db, filter, onIdbHit)
   }
 
   const deleteByIds = (filter: NostrFilter): Promise<void> => {

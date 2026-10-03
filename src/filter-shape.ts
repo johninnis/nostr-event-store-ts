@@ -1,5 +1,6 @@
-import type { NostrFilter, PublicKey } from "@innis/nostr-core"
-import { isParameterisedReplaceable, isReplaceable, replaceableStorageKey } from "@innis/nostr-core"
+import type { NostrEvent, NostrFilter } from "@innis/nostr-core"
+import { compileFilter, isEventExpired, kindCategory, replaceableStorageKey } from "@innis/nostr-core"
+import { DEFAULT_LIMIT } from "./constants.ts"
 
 export const hasSearch = (filter: NostrFilter): boolean => filter.search !== undefined
 
@@ -14,8 +15,24 @@ export const isReplaceableLookupFilter = (filter: NostrFilter): boolean => {
   if (filter.since !== undefined || filter.until !== undefined) return false
   if (filter.ids !== undefined) return false
   for (const key of Object.keys(filter)) if (key.startsWith("#")) return false
-  return filter.kinds.every((kind) => isReplaceable(kind) && !isParameterisedReplaceable(kind))
+  return filter.kinds.every((kind) => kindCategory(kind) === "replaceable")
 }
 
-export const replaceableLookupKey = (kind: number, pubkey: PublicKey): string | null =>
-  replaceableStorageKey({ kind, pubkey, tags: [] })
+export const replaceableLookupKeys = (filter: NostrFilter): ReadonlyArray<string> => {
+  const keys = new Set<string>()
+  for (const kind of filter.kinds ?? []) {
+    for (const pubkey of filter.authors ?? []) {
+      const key = replaceableStorageKey({ kind, pubkey, tags: [] })
+      if (key !== null) keys.add(key)
+    }
+  }
+  return [...keys]
+}
+
+export const readLimit = (filter: NostrFilter): number =>
+  filter.limit ?? (isIdsOnlyFilter(filter) || isReplaceableLookupFilter(filter) ? Infinity : DEFAULT_LIMIT)
+
+export const compileServable = (filter: NostrFilter, at: number): (event: NostrEvent) => boolean => {
+  const { matches } = compileFilter(filter)
+  return (event) => matches(event) && !isEventExpired(event, at)
+}

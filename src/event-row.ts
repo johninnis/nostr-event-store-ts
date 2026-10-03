@@ -5,7 +5,7 @@ import { isRecord, parseNostrEvent, replaceableStorageKey } from "@innis/nostr-c
  * The stored shape of an event in IndexedDB. The scalar columns (`id`, `pubkey`, `created_at`,
  * `replaceable_key`) are denormalised copies of fields on `event`; they exist only to back the
  * object-store's indices. They are never read back into application logic — readers take `event`
- * and re-apply `matchesFilter`, so the embedded event is the single source of truth.
+ * and re-apply `compileFilter(filter).matches`, so the embedded event is the single source of truth.
  */
 export interface EventRow {
   readonly id: string

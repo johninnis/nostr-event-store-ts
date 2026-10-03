@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert"
 import type { NostrEvent, NostrFilter } from "@innis/nostr-core"
-import { KIND_CONTACT_LIST, KIND_METADATA, KIND_SHORT_NOTE, parseEventId, parsePublicKey } from "@innis/nostr-core"
+import { KIND_FOLLOW_LIST, KIND_LONGFORM_CONTENT, KIND_METADATA, KIND_TEXT_NOTE } from "@innis/nostr-core"
+import { eventIdFixture, publicKeyFixture } from "@innis/nostr-core/testing"
 import { REPLACEABLE_CACHE_MAX_ENTRIES } from "../src/constants.ts"
 import { parseEventFromRow } from "../src/event-row.ts"
 import { createEventStore } from "../src/event-store.ts"
@@ -15,11 +16,11 @@ Deno.test("createEventStore - exposes the documented public surface and is froze
 
 Deno.test("peek - ids-only filter returns events that are in memory, skips misses", () => {
   const eventStore = buildStore()
-  const a = buildEventFixture({ id: parseEventId("11".padEnd(64, "0")) })
-  const b = buildEventFixture({ id: parseEventId("22".padEnd(64, "0")) })
+  const a = buildEventFixture({ id: eventIdFixture("11".padEnd(64, "0")) })
+  const b = buildEventFixture({ id: eventIdFixture("22".padEnd(64, "0")) })
   eventStore.ingest(a)
   eventStore.ingest(b)
-  const result = eventStore.peek({ ids: [a.id, parseEventId("ff".padEnd(64, "0")), b.id] })
+  const result = eventStore.peek({ ids: [a.id, eventIdFixture("ff".padEnd(64, "0")), b.id] })
   assertEquals(result.length, 2)
   assertEquals(new Set(result.map((e) => e.id)), new Set([a.id, b.id]))
 })
@@ -68,16 +69,37 @@ Deno.test("peek - generic kind filter caps at limit, newest first, honouring sin
   assertEquals(window.map((e) => e.created_at), [1300, 1200])
 })
 
-Deno.test("peek - equal created_at events keep first-seen order under the bounded top-N", () => {
+Deno.test("peek - equal created_at events order lowest id first under the bounded top-N (NIP-01)", () => {
   const eventStore = buildStore()
   const UNIQUE_KIND = 4243
-  const first = buildEventFixture({ kind: UNIQUE_KIND, created_at: 2000 })
-  const second = buildEventFixture({ kind: UNIQUE_KIND, created_at: 2000 })
-  const third = buildEventFixture({ kind: UNIQUE_KIND, created_at: 2000 })
-  eventStore.ingest(first)
-  eventStore.ingest(second)
-  eventStore.ingest(third)
-  assertEquals(eventStore.peek({ kinds: [UNIQUE_KIND], limit: 2 }).map((e) => e.id), [first.id, second.id])
+  const high = buildEventFixture({ id: eventIdFixture("33".padEnd(64, "0")), kind: UNIQUE_KIND, created_at: 2000 })
+  const low = buildEventFixture({ id: eventIdFixture("11".padEnd(64, "0")), kind: UNIQUE_KIND, created_at: 2000 })
+  const mid = buildEventFixture({ id: eventIdFixture("22".padEnd(64, "0")), kind: UNIQUE_KIND, created_at: 2000 })
+  eventStore.ingest(high)
+  eventStore.ingest(low)
+  eventStore.ingest(mid)
+  assertEquals(eventStore.peek({ kinds: [UNIQUE_KIND], limit: 2 }).map((e) => e.id), [low.id, mid.id])
+})
+
+Deno.test("peek - limit 0 returns no stored events for any filter shape (NIP-01)", () => {
+  const eventStore = buildStore()
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
+  const meta = buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A, content: "{}" })
+  eventStore.ingest(note)
+  eventStore.ingest(meta)
+  assertEquals(eventStore.peek({ ids: [note.id], limit: 0 }), [])
+  assertEquals(eventStore.peek({ kinds: [KIND_METADATA], authors: [PUBKEY_A], limit: 0 }), [])
+  assertEquals(eventStore.peek({ kinds: [KIND_TEXT_NOTE], limit: 0 }), [])
+})
+
+Deno.test("peek - ids lookup returns each event once, newest first, cut to limit", () => {
+  const eventStore = buildStore()
+  const older = buildEventFixture({ created_at: 1000 })
+  const newer = buildEventFixture({ created_at: 2000 })
+  eventStore.ingest(older)
+  eventStore.ingest(newer)
+  assertEquals(eventStore.peek({ ids: [older.id, newer.id, older.id] }).map((e) => e.id), [newer.id, older.id])
+  assertEquals(eventStore.peek({ ids: [older.id, newer.id], limit: 1 }).map((e) => e.id), [newer.id])
 })
 
 Deno.test("peek - filter with search returns empty without consulting cache", () => {
@@ -110,8 +132,8 @@ Deno.test("peek - generic scan never surfaces a superseded replaceable (newer re
 Deno.test("ingest - replaceable tie on created_at keeps the lexicographically lower id (NIP-01)", () => {
   const eventStore = buildStore()
   const opts = { kind: KIND_METADATA, pubkey: PUBKEY_A, created_at: 1000, content: "{}" }
-  const lowId = buildEventFixture({ ...opts, id: parseEventId("11".padEnd(64, "0")) })
-  const highId = buildEventFixture({ ...opts, id: parseEventId("22".padEnd(64, "0")) })
+  const lowId = buildEventFixture({ ...opts, id: eventIdFixture("11".padEnd(64, "0")) })
+  const highId = buildEventFixture({ ...opts, id: eventIdFixture("22".padEnd(64, "0")) })
 
   assertEquals(eventStore.ingest(highId), true)
   assertEquals(eventStore.ingest(lowId), true)
@@ -121,17 +143,25 @@ Deno.test("ingest - replaceable tie on created_at keeps the lexicographically lo
 Deno.test("ingest - replaceable tie does not let a higher id supersede the lower one already held", () => {
   const eventStore = buildStore()
   const opts = { kind: KIND_METADATA, pubkey: PUBKEY_A, created_at: 1000, content: "{}" }
-  const lowId = buildEventFixture({ ...opts, id: parseEventId("11".padEnd(64, "0")) })
-  const highId = buildEventFixture({ ...opts, id: parseEventId("22".padEnd(64, "0")) })
+  const lowId = buildEventFixture({ ...opts, id: eventIdFixture("11".padEnd(64, "0")) })
+  const highId = buildEventFixture({ ...opts, id: eventIdFixture("22".padEnd(64, "0")) })
 
   assertEquals(eventStore.ingest(lowId), true)
   assertEquals(eventStore.ingest(highId), false)
   assertEquals(eventStore.peek({ kinds: [KIND_METADATA], authors: [PUBKEY_A] }).map((e) => e.id), [lowId.id])
 })
 
+Deno.test("ingest - refuses an addressable event whose d tags disagree, since it names no one identifier", () => {
+  const eventStore = buildStore()
+  const event = buildEventFixture({ kind: KIND_LONGFORM_CONTENT, pubkey: PUBKEY_A, tags: [["d", "one"], ["d", "two"]] })
+
+  assertEquals(eventStore.ingest(event), false)
+  assertEquals(eventStore.peek({ kinds: [KIND_LONGFORM_CONTENT] }), [])
+})
+
 Deno.test("cache - byReplaceableKey is bounded: the least-recently-used replaceable is evicted past the cap", () => {
   const eventStore = buildStore()
-  const authorAt = (i: number) => parsePublicKey(i.toString(16).padStart(64, "0"))
+  const authorAt = (i: number) => publicKeyFixture(i.toString(16).padStart(64, "0"))
   eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: authorAt(0), content: "{}" }))
   for (let i = 1; i <= REPLACEABLE_CACHE_MAX_ENTRIES; i++) {
     eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: authorAt(i), content: "{}" }))
@@ -145,7 +175,7 @@ Deno.test("cache - byReplaceableKey is bounded: the least-recently-used replacea
 
 Deno.test("peek - kind scan reflects replaceable cache eviction: the evicted author's event is gone", () => {
   const eventStore = buildStore()
-  const authorAt = (i: number) => parsePublicKey(i.toString(16).padStart(64, "0"))
+  const authorAt = (i: number) => publicKeyFixture(i.toString(16).padStart(64, "0"))
   for (let i = 0; i <= REPLACEABLE_CACHE_MAX_ENTRIES; i++) {
     eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: authorAt(i), content: "{}" }))
   }
@@ -159,7 +189,7 @@ Deno.test("subscribe - kind-filtered listener fires when matching event ingests"
   const seen: Array<NostrEvent> = []
   eventStore.subscribe({ kinds: [KIND_METADATA] }, (e) => seen.push(e))
   eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A }))
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A }))
   assertEquals(seen.length, 1)
   assertEquals(seen[0]?.kind, KIND_METADATA)
 })
@@ -167,9 +197,9 @@ Deno.test("subscribe - kind-filtered listener fires when matching event ingests"
 Deno.test("subscribe - kind+author filter fires only for matching author (no manual check needed)", () => {
   const eventStore = buildStore()
   const seen: Array<NostrEvent> = []
-  eventStore.subscribe({ kinds: [KIND_CONTACT_LIST], authors: [PUBKEY_A] }, (e) => seen.push(e))
-  eventStore.ingest(buildEventFixture({ kind: KIND_CONTACT_LIST, pubkey: PUBKEY_A }))
-  eventStore.ingest(buildEventFixture({ kind: KIND_CONTACT_LIST, pubkey: PUBKEY_B }))
+  eventStore.subscribe({ kinds: [KIND_FOLLOW_LIST], authors: [PUBKEY_A] }, (e) => seen.push(e))
+  eventStore.ingest(buildEventFixture({ kind: KIND_FOLLOW_LIST, pubkey: PUBKEY_A }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_FOLLOW_LIST, pubkey: PUBKEY_B }))
   assertEquals(seen.length, 1)
   assertEquals(seen[0]?.pubkey, PUBKEY_A)
 })
@@ -178,9 +208,9 @@ Deno.test("subscribe - filter without kinds uses flat bucket and fires for any m
   const eventStore = buildStore()
   const seen: Array<NostrEvent> = []
   eventStore.subscribe({ authors: [PUBKEY_A] }, (e) => seen.push(e))
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A }))
   eventStore.ingest(buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A }))
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_B }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_B }))
   assertEquals(seen.length, 2)
 })
 
@@ -225,9 +255,9 @@ Deno.test("subscribe - flat-bucket listener that unsubscribes mid-fire does not 
     unsubscribeFirst()
   })
   eventStore.subscribe({ authors: [PUBKEY_A] }, () => seen.push("second"))
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A }))
   assertEquals(seen, ["first", "second"])
-  eventStore.ingest(buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A }))
+  eventStore.ingest(buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A }))
   assertEquals(seen, ["first", "second", "second"])
 })
 
@@ -246,7 +276,7 @@ Deno.test("delete - empty filter throws, never wipes the store", async () => {
 
 Deno.test("delete - { ids } removes events from memory", () => {
   const eventStore = buildStore()
-  const a = buildEventFixture({ id: parseEventId("11".padEnd(64, "0")) })
+  const a = buildEventFixture({ id: eventIdFixture("11".padEnd(64, "0")) })
   eventStore.ingest(a)
   assertEquals(eventStore.peek({ ids: [a.id] }).length, 1)
   eventStore.delete({ ids: [a.id] })
@@ -255,10 +285,10 @@ Deno.test("delete - { ids } removes events from memory", () => {
 
 Deno.test("delete - { ids, authors } removes only the listed ids by those authors", () => {
   const eventStore = buildStore()
-  const alice = parsePublicKey("a".repeat(64))
-  const bob = parsePublicKey("b".repeat(64))
-  const byAlice = buildEventFixture({ id: parseEventId("12".padEnd(64, "0")), pubkey: alice })
-  const byBob = buildEventFixture({ id: parseEventId("13".padEnd(64, "0")), pubkey: bob })
+  const alice = publicKeyFixture("a".repeat(64))
+  const bob = publicKeyFixture("b".repeat(64))
+  const byAlice = buildEventFixture({ id: eventIdFixture("12".padEnd(64, "0")), pubkey: alice })
+  const byBob = buildEventFixture({ id: eventIdFixture("13".padEnd(64, "0")), pubkey: bob })
   eventStore.ingest(byAlice)
   eventStore.ingest(byBob)
   eventStore.delete({ ids: [byAlice.id, byBob.id], authors: [bob] })
@@ -267,27 +297,27 @@ Deno.test("delete - { ids, authors } removes only the listed ids by those author
 
 Deno.test("delete - { authors } clears every event by that author from memory", () => {
   const eventStore = buildStore()
-  eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_A, id: parseEventId("aa".padEnd(64, "0")) }))
-  eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_A, id: parseEventId("bb".padEnd(64, "0")) }))
+  eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_A, id: eventIdFixture("aa".padEnd(64, "0")) }))
+  eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_A, id: eventIdFixture("bb".padEnd(64, "0")) }))
   eventStore.ingest(
-    buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A, id: parseEventId("cc".padEnd(64, "0")) }),
+    buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A, id: eventIdFixture("cc".padEnd(64, "0")) }),
   )
-  eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_B, id: parseEventId("dd".padEnd(64, "0")) }))
+  eventStore.ingest(buildEventFixture({ kind: 1, pubkey: PUBKEY_B, id: eventIdFixture("dd".padEnd(64, "0")) }))
   eventStore.delete({ authors: [PUBKEY_A] })
-  assertEquals(eventStore.peek({ ids: [parseEventId("aa".padEnd(64, "0"))] }).length, 0)
+  assertEquals(eventStore.peek({ ids: [eventIdFixture("aa".padEnd(64, "0"))] }).length, 0)
   assertEquals(eventStore.peek({ kinds: [KIND_METADATA], authors: [PUBKEY_A] }).length, 0)
-  assertEquals(eventStore.peek({ ids: [parseEventId("dd".padEnd(64, "0"))] })[0]?.pubkey, PUBKEY_B)
+  assertEquals(eventStore.peek({ ids: [eventIdFixture("dd".padEnd(64, "0"))] })[0]?.pubkey, PUBKEY_B)
 })
 
 Deno.test("delete - { kinds, authors } removes non-replaceable matches from memory", () => {
   const eventStore = buildStore()
-  const a1 = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, id: parseEventId("a1".padEnd(64, "0")) })
-  const a2 = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A, id: parseEventId("a2".padEnd(64, "0")) })
-  const b1 = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_B, id: parseEventId("b1".padEnd(64, "0")) })
+  const a1 = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, id: eventIdFixture("a1".padEnd(64, "0")) })
+  const a2 = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A, id: eventIdFixture("a2".padEnd(64, "0")) })
+  const b1 = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_B, id: eventIdFixture("b1".padEnd(64, "0")) })
   eventStore.ingest(a1)
   eventStore.ingest(a2)
   eventStore.ingest(b1)
-  eventStore.delete({ kinds: [KIND_SHORT_NOTE], authors: [PUBKEY_A] })
+  eventStore.delete({ kinds: [KIND_TEXT_NOTE], authors: [PUBKEY_A] })
   assertEquals(eventStore.peek({ ids: [a1.id] }).length, 0)
   assertEquals(eventStore.peek({ ids: [a2.id] }).length, 0)
   assertEquals(eventStore.peek({ ids: [b1.id] }).length, 1)
@@ -295,7 +325,7 @@ Deno.test("delete - { kinds, authors } removes non-replaceable matches from memo
 
 Deno.test("delete - { authors, kinds } removes only matching events", () => {
   const eventStore = buildStore()
-  const note = buildEventFixture({ kind: KIND_SHORT_NOTE, pubkey: PUBKEY_A })
+  const note = buildEventFixture({ kind: KIND_TEXT_NOTE, pubkey: PUBKEY_A })
   const meta = buildEventFixture({ kind: KIND_METADATA, pubkey: PUBKEY_A })
   eventStore.ingest(note)
   eventStore.ingest(meta)
