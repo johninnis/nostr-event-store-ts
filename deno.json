@@ -1,6 +1,6 @@
 {
   "name": "@innis/nostr-event-store",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publish": {
     "exclude": ["tests/", "deno.lock", ".github/"]
   },
@@ -26,8 +26,8 @@
   "imports": {
     "@std/assert": "jsr:@std/assert@^1",
     "@std/path": "jsr:@std/path@^1",
-    "@innis/nostr-core": "jsr:@innis/nostr-core@^0.4.0",
-    "@innis/nostr-core/testing": "jsr:@innis/nostr-core@^0.4.0/testing",
+    "@innis/nostr-core": "jsr:@innis/nostr-core@^0.5.0",
+    "@innis/nostr-core/testing": "jsr:@innis/nostr-core@^0.5.0/testing",
     "fake-indexeddb/auto": "npm:fake-indexeddb@^6/auto"
   },
   "tasks": {
