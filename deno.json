@@ -40,8 +40,9 @@
     "exports-tested": "deno run --allow-read --allow-run jsr:@innis/coding-standards@^0.2.3/check-exports-tested",
     "docs": "deno run --allow-read --allow-run jsr:@innis/coding-standards@^0.2.3/check-docs",
     "lint-exemptions": "deno run --allow-read --allow-run jsr:@innis/coding-standards@^0.2.3/check-lint-exemptions",
+    "path-lengths": "deno run --allow-run=git jsr:@innis/coding-standards@^0.2.3/check-path-lengths",
     "publish:dry": "deno publish --dry-run",
-    "ci": "deno task fmt:check && deno task lint && deno task lint-exemptions && deno task check && deno task coverage && deno task exports-tested && deno task docs"
+    "ci": "deno task fmt:check && deno task lint && deno task lint-exemptions && deno task check && deno task coverage && deno task exports-tested && deno task docs && deno task path-lengths"
   },
   "lint": {
     "plugins": [
